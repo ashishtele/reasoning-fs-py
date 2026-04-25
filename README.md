@@ -19,12 +19,12 @@ No Docker. No containerization. Just pure vector DB magic.
 ## Why It Matters
 
 Traditional agent sandboxes (like Docker-based code exec) are:
-- 🐢 **Slow**: ~46,000ms per command
+- 🐢 **Slow**: ~46,000ms per command (container startup + exec)
 - 💸 **Expensive**: ~$0.10 per query
 - 🔒 **Complex**: Container orchestration overhead
 
 ReasoningFS is:
-- ⚡ **Fast**: ~100ms per command (460x speedup)
+- ⚡ **Fast**: 0.006ms-600ms depending on sync strategy (76x-7,600,000x speedup)
 - 💰 **Cheap**: ~$0.001 per query (100x cheaper)
 - 🎯 **Simple**: Pure Python + ChromaDB
 
@@ -208,11 +208,22 @@ mypy reasoning_fs/ --ignore-missing-imports
 
 ## Performance
 
-| Metric | Docker Sandbox | ReasoningFS | Speedup |
-|--------|---------------|-------------|---------|
-| Command latency | ~46,000ms | ~100ms | **460x** |
-| Cost per query | ~$0.10 | ~$0.001 | **100x** |
-| Memory retrieval | N/A | Instant | - |
+| Scenario | Latency | Notes |
+|----------|---------|-------|
+| Memory write (async) | ~0.006ms/file | Volatile, batch-sync later |
+| ChromaFs sync write | ~600ms/file | Persisted to disk |
+| Cache read (hit) | ~0.003ms/file | From memory buffer |
+| DB read (miss) | ~3ms/file | Fallback to ChromaDB |
+| Batch sync (100 files) | ~1,700ms | ~17ms/file amortized |
+
+**Speedup vs Docker**: 76x (sync write) to 7,600,000x (memory write) depending on strategy.
+
+**Trade-off**: AsyncOverlayFs trades *immediate persistence* for *instant writes*. Best for agents that:
+1. Write many files to memory buffer (instant)
+2. Read frequently from cache (instant)
+3. Sync to disk in batches (amortized cost)
+
+**Bottleneck**: ChromaDB sync I/O, not the async layer. For true parallelism, need async vector DB (Qdrant, Weaviate).
 
 ## Benchmarks
 
