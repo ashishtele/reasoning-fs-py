@@ -25,5 +25,12 @@ Quick Start:
 from .vfs import VFS
 from .errors import VFSError, FileNotFound, PathError
 
-__version__ = "0.1.0"
-__all__ = ["VFS", "VFSError", "FileNotFound", "PathError"]
+# Optional enhanced features
+try:
+    from .enhanced import EnhancedVFS, TieredContent, FileVersion
+    __all__ = ["VFS", "EnhancedVFS", "TieredContent", "FileVersion", 
+               "VFSError", "FileNotFound", "PathError"]
+except ImportError:
+    __all__ = ["VFS", "VFSError", "FileNotFound", "PathError"]
+
+__version__ = "0.2.0"
