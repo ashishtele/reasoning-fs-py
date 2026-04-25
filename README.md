@@ -126,18 +126,24 @@ reasoning-fs scale 0.8
 reasoning-fs stats
 ```
 
-## LangChain Integration
+## LangChain Integration (Experimental)
+
+```bash
+pip install langchain langchain-openai
+```
 
 ```python
-from langchain.llms import OpenAI
-from reasoning_fs.langchain import create_reasoning_fs_agent
+from langchain_openai import OpenAI
+from reasoning_fs.langchain import create_reasoning_fs_agent, ReasoningFsTool
 
 llm = OpenAI()
-tools = [ReasoningFsTool()]
+tools = [ReasoningFsTool(memory_path="reasoning_db", vfs_path="vfs_db")]
 
 agent = create_reasoning_fs_agent(llm, tools)
 result = agent.run("Find SQL injection in src/")
 ```
+
+**Note:** This integration is experimental. The `ReasoningFsTool` wraps ChromaFs commands with memory-aware scaling, but full agent testing requires an LLM API key.
 
 ## Architecture
 
