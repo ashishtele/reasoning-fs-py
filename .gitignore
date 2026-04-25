@@ -1,21 +1,53 @@
+# Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
+*$py.class
+*.so
 .Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
 .venv/
 venv/
 ENV/
-*.egg-info/
-.eggs/
-dist/
-build/
-.coverage
-htmlcov/
-.pytest_cache/
-.mypy_cache/
+env/
+
+# LMDB databases (generated data)
+*.lmdb
+
+# Benchmark outputs
+*.png
+*.json
+optimization_data.json
+lmdb_vs_chroma.json
+
+# IDE
+.idea/
+.vscode/
 *.swp
 *.swo
 *~
-.env
-*.log
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# OS
+.DS_Store
+Thumbs.db

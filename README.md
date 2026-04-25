@@ -1,285 +1,274 @@
-# ReasoningFS
+# lmdb-vfs: Lightning-Fast Virtual Filesystem
 
-**Memory-aware agent harness combining Google's ReasoningBank and Mintlify's ChromaFs patterns.**
+[![PyPI](https://img.shields.io/pypi/v/lmdb-vfs.svg)](https://pypi.org/project/lmdb-vfs/)
+[![Python](https://img.shields.io/pypi/pyversions/lmdb-vfs.svg)](https://pypi.org/project/lmdb-vfs/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-```bash
-pip install reasoning-fs
-```
+A high-performance virtual filesystem backed by LMDB. **1200x faster** than ChromaDB for file storage operations.
 
-## What It Is
+## Why LMDB VFS?
 
-ReasoningFS is a lightweight Python package that gives AI agents:
+Traditional filesystems are slow for programmatic access. ChromaDB is overkill (and 1200x slower). LMDB VFS gives you:
 
-1. **Memory** - Store and retrieve reasoning traces (from [ReasoningBank](https://github.com/google-research/reasoning-bank))
-2. **Virtual Filesystem** - UNIX-like commands over ChromaDB (from [ChromaFs](https://github.com/mintlify/chromafs))
-3. **Dynamic Scaling** - Adjust token budget/temperature based on confidence
-
-No Docker. No containerization. Just pure vector DB magic.
-
-## Why It Matters
-
-Traditional agent sandboxes (like Docker-based code exec) are:
-- 🐢 **Slow**: ~46,000ms per command (container startup + exec)
-- 💸 **Expensive**: ~$0.10 per query
-- 🔒 **Complex**: Container orchestration overhead
-
-ReasoningFS is:
-- ⚡ **Fast**: 0.006ms-600ms depending on sync strategy (76x-7,600,000x speedup)
-- 💰 **Cheap**: ~$0.001 per query (100x cheaper)
-- 🎯 **Simple**: Pure Python + ChromaDB
+- ⚡ **1200x faster** than ChromaDB
+- 💾 **90% less disk space** overhead
+- 🔍 **Full-text search** (grep, find)
+- 📁 **Directory support** (nested paths)
+- 🔄 **ACID transactions**
+- 🚀 **Memory-mapped I/O** (OS-level caching)
 
 ## Quick Start
 
-### 1. Initialize
-
 ```python
-from reasoning_fs import ReasoningMemory, ChromaFs, MemoryAwareAgent
+from lmdb_vfs import VFS
 
-memory = ReasoningMemory(db_path="reasoning_db")
-vfs = ChromaFs(db_path="vfs_db")
-agent = MemoryAwareAgent(memory=memory, fs=vfs)
-```
+# Create/open database
+vfs = VFS("mydb.lmdb")
 
-### 2. Populate VFS
+# Write files
+vfs.write("docs/report.txt", "Hello, World!")
+vfs.write("src/main.py", "print('hello')")
 
-```python
-vfs.write("src/auth/login.py="""
-def login(username, password):
-    # VULNERABILITY: SQL injection
-    query = f"SELECT * FROM users WHERE username = '{username}'"
-    return db.execute(query)
-""")
+# Read files
+content = vfs.read("docs/report.txt")
+print(content)  # "Hello, World!"
 
-vfs.write("src/auth/register.py="""
-def register(username, password):
-    # Secure: parameterized query
-    query = "INSERT INTO users (username, password) VALUES (?, ?)"
-    return db.execute(query, (username, password))
-""")
-```
+# Search
+results = vfs.grep("hello")  # Find all files containing "hello"
+files = vfs.find("*.py")     # Find all Python files
 
-### 3. Search & Analyze
+# List directories
+items = vfs.listdir("docs")
 
-```python
-# Grep for patterns
-results = vfs.grep("SELECT")
-print(results)
-# src/auth/login.py:3: query = f"SELECT * FROM users..."
+# Close (or use context manager)
+vfs.close()
 
-# Read file
-content = vfs.cat("src/auth/login.py")
-
-# List directory
-files = vfs.ls("src/auth/")
-```
-
-### 4. Memory-Aware Agent
-
-```python
-task = "Find SQL injection vulnerabilities"
-
-# Agent queries memory first
-similar = memory.search(task)
-confidence = agent.scaler.calculate_confidence(similar)
-
-# Adjust token budget
-scaling = agent.scaler.scale(confidence)
-print(f"Confidence: {confidence:.2f}")
-print(f"Max tokens: {scaling.max_tokens}")
-print(f"Temperature: {scaling.temperature}")
-
-# Execute task
-result = agent.run(task)
-
-# Log reasoning trace
-memory.store(
-    task=task,
-    reasoning="Searched for SELECT statements, found f-string interpolation",
-    outcome="Found vulnerability in login.py",
-    success=True
-)
-```
-
-## CLI Usage
-
-```bash
-# Initialize databases
-reasoning-fs init --memory reasoning_db --vfs vfs_db
-
-# Store a reasoning trace
-reasoning-fs store "Find SQL injection" "Searched for SELECT" "Found in login.py" --success
-
-# Search memory
-reasoning-fs search "Find auth bugs" --n 5
-
-# VFS commands
-reasoning-fs write "test.txt=Hello World"
-reasoning-fs cat test.txt
-reasoning-fs grep "SELECT"
-reasoning-fs ls src/
-reasoning-fs find "*.py"
-
-# Get scaling params
-reasoning-fs scale 0.8
-
-# View stats
-reasoning-fs stats
-```
-
-## LangChain Integration (Experimental)
-
-```bash
-pip install langchain langchain-openai
-```
-
-```python
-from langchain_openai import OpenAI
-from reasoning_fs.langchain import create_reasoning_fs_agent, ReasoningFsTool
-
-llm = OpenAI()
-tools = [ReasoningFsTool(memory_path="reasoning_db", vfs_path="vfs_db")]
-
-agent = create_reasoning_fs_agent(llm, tools)
-result = agent.run("Find SQL injection in src/")
-```
-
-**Note:** This integration is experimental. The `ReasoningFsTool` wraps ChromaFs commands with memory-aware scaling, but full agent testing requires an LLM API key.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      MemoryAwareAgent                        │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐    ┌─────────────────┐                 │
-│  │  ReasoningMemory│    │     ChromaFs    │                 │
-│  │  (reasoning_db) │    │    (vfs_db)     │                 │
-│  │                 │    │                 │                 │
-│  │  - Store traces │    │  - Files as     │                 │
-│  │  - Search       │    │    documents    │                 │
-│  │  - Aggregate    │    │  - grep/cat/ls  │                 │
-│  └────────┬────────┘    └────────┬────────┘                 │
-│           │                      │                          │
-│           └──────────┬───────────┘                          │
-│                      │                                       │
-│           ┌──────────▼───────────┐                          │
-│           │  ConfidenceScaler    │                          │
-│           │                      │                          │
-│           │  - Calculate confidence                        │
-│           │  - Scale tokens/temp  │                          │
-│           └──────────────────────┘                          │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Components
-
-### ReasoningMemory
-Stores reasoning traces as embeddings in ChromaDB:
-- `store(task, reasoning, outcome, success)` - Log a trace
-- `search(query, n_results)` - Find similar traces
-- `aggregate(trace_ids)` - Summarize multiple traces
-
-### ChromaFs
-Virtual filesystem over ChromaDB:
-- `write(path=content)` - Write file
-- `cat(path)` - Read file
-- `grep(pattern)` - Search for pattern
-- `ls(path)` - List directory
-- `find(pattern)` - Find files
-
-### ConfidenceScaler
-Dynamic scaling based on memory:
-- `calculate_confidence(similar_traces)` - Score 0.0-1.0
-- `scale(confidence)` - Return ScalingParams
-- `get_recommendation(confidence)` - Human-readable advice
-
-## Testing
-
-```bash
-# Install dev dependencies
-pip install -e ".[dev]"
-
-# Run tests
-pytest tests/ -v
-
-# Run with coverage
-pytest tests/ -v --cov=reasoning_fs --cov-report=term-missing
-
-# Run linter
-ruff check reasoning_fs/ tests/
-
-# Run type checker
-mypy reasoning_fs/ --ignore-missing-imports
+# Better: use context manager
+with VFS("mydb.lmdb") as vfs:
+    vfs.write("test.txt", "content")
+    print(vfs.read("test.txt"))
 ```
 
 ## Performance
 
-| Scenario | Latency | Notes |
-|----------|---------|-------|
-| Memory write (async) | ~0.006ms/file | Volatile, batch-sync later |
-| ChromaFs sync write | ~600ms/file | Persisted to disk |
-| Cache read (hit) | ~0.003ms/file | From memory buffer |
-| DB read (miss) | ~3ms/file | Fallback to ChromaDB |
-| Batch sync (100 files) | ~1,700ms | ~17ms/file amortized |
+**100 files, 1KB each:**
 
-**Speedup vs Docker**: 76x (sync write) to 7,600,000x (memory write) depending on strategy.
+| Operation | ChromaDB | LMDB VFS | Speedup |
+|-----------|----------|----------|---------|
+| Write     | 12,938ms | 10.8ms   | **1,200x** |
+| Read (300) | 313ms   | 0.26ms   | **1,200x** |
+| Disk Size | 1,132KB  | 40KB     | **28x smaller** |
 
-**Trade-off**: AsyncOverlayFs trades *immediate persistence* for *instant writes*. Best for agents that:
-1. Write many files to memory buffer (instant)
-2. Read frequently from cache (instant)
-3. Sync to disk in batches (amortized cost)
+## Features
 
-**Bottleneck**: ChromaDB sync I/O, not the async layer. For true parallelism, need async vector DB (Qdrant, Weaviate).
-
-## Benchmarks
-
-Ready to test on:
-- **SWE-Bench** - Software engineering tasks
-- **WebArena** - Web navigation
-- Custom benchmarks
+### File Operations
 
 ```python
-from reasoning_fs import MemoryAwareAgent, ReasoningMemory, ChromaFs
-
-# Run benchmark
-memory = ReasoningMemory("benchmark_db")
-vfs = ChromaFs("benchmark_db")
-agent = MemoryAwareAgent(memory, vfs)
-
-results = []
-for task in benchmark_tasks:
-    result = agent.run(task)
-    results.append(result)
-
-# Calculate metrics
-success_rate = sum(1 for r in results if r.success) / len(results)
-print(f"Success rate: {success_rate:.2%}")
+vfs.write(path, content, metadata=None)  # Write file
+vfs.read(path)                            # Read file
+vfs.delete(path)                          # Delete file
+vfs.exists(path)                          # Check existence
 ```
 
-## Roadmap
+### Directory Operations
 
-- [ ] Add more VFS commands (rm, mv, cp, chmod)
-- [ ] Async support for `_arun` methods
-- [ ] Integration with AutoGen, CrewAI
-- [ ] Distributed memory (Redis, PostgreSQL)
-- [ ] Web UI for browsing traces
-- [ ] Benchmark suite (SWE-Bench, WebArena)
+```python
+vfs.mkdir(path)                           # Create directory
+vfs.listdir(path)                         # List directory
+vfs.walk(path)                            # Traverse tree
+```
+
+### Search Operations
+
+```python
+vfs.grep(pattern, path=None)              # Search content (regex)
+vfs.find(pattern, path=None)              # Find files (glob)
+```
+
+### Advanced
+
+```python
+# Metadata support
+vfs.write("file.txt", "content", {"author": "Alice", "version": "1.0"})
+
+# Large databases
+vfs = VFS("large.lmdb", map_size=10*1024**3)  # 10GB max
+
+# Transactional operations
+with vfs._env.begin(write=True) as txn:
+    # Multiple operations in one transaction
+    pass
+```
+
+## Installation
+
+```bash
+pip install lmdb-vfs
+```
+
+From source:
+
+```bash
+git clone https://github.com/ashishtele/reasoning-fs.git
+cd reasoning-fs
+pip install -e .
+```
+
+## API Reference
+
+### VFS Class
+
+```python
+class VFS:
+    """Lightweight virtual filesystem backed by LMDB."""
+    
+    def __init__(self, path: str, map_size: int = 1024**3)
+    """Initialize VFS with LMDB backend.
+    
+    Args:
+        path: Path to the LMDB database file.
+        map_size: Maximum database size in bytes (default: 1GB).
+    """
+    
+    def write(self, path: str, content: str, metadata: dict = None) -> None
+    """Write content to a file."""
+    
+    def read(self, path: str) -> str
+    """Read content from a file."""
+    
+    def delete(self, path: str) -> None
+    """Delete a file."""
+    
+    def exists(self, path: str) -> bool
+    """Check if file/directory exists."""
+    
+    def mkdir(self, path: str) -> None
+    """Create a directory."""
+    
+    def listdir(self, path: str) -> List[str]
+    """List directory contents."""
+    
+    def grep(self, pattern: str, path: str = None) -> List[Tuple[str, int, str]]
+    """Search for pattern in file contents.
+    
+    Returns: List of (path, line_number, line) tuples.
+    """
+    
+    def find(self, pattern: str, path: str = None) -> List[str]
+    """Find files matching pattern.
+    
+    Args:
+        pattern: Glob pattern (e.g., "*.txt").
+        path: Optional path to search within.
+    """
+    
+    def walk(self, path: str = ".") -> Iterator[Tuple[str, List[str], List[str]]]
+    """Walk directory tree.
+    
+    Yields: (dirpath, dirnames, filenames) tuples.
+    """
+    
+    def close(self) -> None
+    """Close the database."""
+```
+
+## Use Cases
+
+### 1. Agent Memory
+
+```python
+# Store conversation history
+vfs.write("conversations/user123/session1.json", json.dumps(conversation))
+
+# Search past conversations
+results = vfs.grep("what is the capital of France?")
+```
+
+### 2. Document Search
+
+```python
+# Index documents
+for doc in documents:
+    vfs.write(f"docs/{doc.id}.txt", doc.content, {"tags": doc.tags})
+
+# Full-text search
+results = vfs.grep("machine learning")
+
+# Filter by tags
+python_files = vfs.find("*.py")
+```
+
+### 3. Version Control
+
+```python
+# Store file versions
+vfs.write("project/main.py:v1", old_content)
+vfs.write("project/main.py:v2", new_content)
+
+# Compare versions
+v1 = vfs.read("project/main.py:v1")
+v2 = vfs.read("project/main.py:v2")
+```
+
+## Migration from ChromaDB
+
+See [MIGRATION.md](MIGRATION.md) for detailed migration guide.
+
+```python
+# Old (ChromaDB)
+from chromadb import PersistentClient
+client = PersistentClient("db")
+collection = client.get_collection("files")
+collection.add(ids=[...], documents=[...], metadatas=[...])
+
+# New (LMDB VFS)
+from lmdb_vfs import VFS
+vfs = VFS("db.lmdb")
+vfs.write("path/to/file", content)
+```
+
+## Testing
+
+```bash
+# Run all tests
+pytest tests/
+
+# Run VFS tests only
+pytest tests/test_vfs.py -v
+
+# Run with coverage
+pytest tests/ --cov=lmdb_vfs --cov-report=html
+```
+
+## Benchmark
+
+```bash
+# Run performance benchmarks
+python benchmark_optimization.py
+python redb_benchmark.py
+python lmdb_benchmark.py
+
+# Generate optimization curves
+python optimization_curves.py
+```
 
 ## License
 
-MIT
+MIT License. See [LICENSE](LICENSE) for details.
 
 ## Contributing
 
-1. Fork the repo
+1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Run tests: `pytest tests/ -v`
-5. Submit a PR
+4. Run tests: `pytest tests/`
+5. Submit a pull request
 
-## References
+## Acknowledgments
 
-- [ReasoningBank](https://github.com/google-research/reasoning-bank) - Google's memory mechanism
-- [ChromaFs](https://github.com/mintlify/chromafs) - Mintlify's VFS pattern
-- [SWE-Bench](https://www.swebench.com/) - Software engineering benchmark
-- [WebArena](https://webarena.dev/) - Web navigation benchmark
+- [LMDB](https://www.symas.com/symas-lmdb): Lightning Memory-Mapped Database
+- [Karpathy's optimization curves](https://github.com/karpathy/autoresearch): Inspiration for benchmarking
+
+---
+
+**Built with ❤️ by Ashish Tele**

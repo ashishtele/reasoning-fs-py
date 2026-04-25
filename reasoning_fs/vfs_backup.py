@@ -1,17 +1,10 @@
-"""Virtual filesystem over ChromaDB - OPTIMIZED VERSION.
+"""Virtual filesystem over ChromaDB.
 
 Based on Mintlify's ChromaFs pattern:
 - Store entire directory tree as __path_tree__ blob for O(1) navigation
 - Dual in-memory cache: Set of paths + Map of dir→children
 - UNIX-like commands (grep, cat, ls, find, write, read)
 - No Docker/container dependencies - pure ChromaDB
-
-OPTIMIZATIONS:
-1. DISABLED embeddings (exact storage, no semantic search needed)
-2. In-memory file content cache for O(1) reads
-3. Batched writes (upsert 100 files at once)
-4. Use get() instead of query() for exact path lookups
-5. Disabled telemetry and optimized settings
 """
 
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -21,73 +14,49 @@ import json
 import gzip
 import base64
 import shlex
-import time
 import chromadb
-from chromadb.config import Settings
 
 
 class ChromaFs:
-    """Optimized virtual filesystem over ChromaDB.
+    """Virtual filesystem over ChromaDB.
     
     Provides UNIX-like commands over a vector database:
     - `ls path/` - list files/directories
-    - `cat file.txt` - read file contents (O(1) from cache)
+    - `cat file.txt` - read file contents
     - `grep pattern` - search for patterns
     - `find name` - find files by name
-    - `write path=content` - batch write (100 files/batch)
+    - `write path=content` - write file
     - `read path` - read file (alias for cat)
     
-    Key optimizations:
-    - NO embeddings (exact storage only)
+    Key optimizations from Mintlify's implementation:
     - __path_tree__: Gzipped JSON blob storing entire file tree
     - In-memory Set<string> for O(1) path lookup
     - In-memory Map<string, string[]> for O(1) directory listing
-    - In-memory Dict<string, string> for O(1) file content cache
-    - Batched writes (100 files per batch)
-    - get() instead of query() for exact lookups
     
     Example:
         >>> vfs = ChromaFs(db_path="vfs_db")
         >>> vfs.write("src/main.py=print('hello')")
-        >>> print(vfs.cat("src/main.py"))  # O(1) from cache
+        >>> print(vfs.cat("src/main.py"))
         >>> results = vfs.grep("hello")
     """
 
-    def __init__(self, db_path: str = "vfs_db", cache_size: int = 1000):
+    def __init__(self, db_path: str = "vfs_db"):
         """Initialize VFS with ChromaDB and bootstrap path tree.
         
         Args:
             db_path: Path to ChromaDB persistence directory
-            cache_size: Max files to keep in memory cache (LRU-style)
         """
         self.db_path = db_path
-        self.cache_size = cache_size
-        
-        # Optimized ChromaDB client settings
-        self.client = chromadb.PersistentClient(
-            path=db_path,
-            settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=True,
-            )
-        )
-        
-        # Collection WITHOUT embeddings (exact storage only)
+        self.client = chromadb.PersistentClient(path=db_path)
         self.collection = self.client.get_or_create_collection(
             name="filesystem",
-            metadata={"description": "Virtual filesystem - no embeddings"},
-            embedding_function=None,  # CRITICAL: Disable embeddings
+            metadata={"description": "Virtual filesystem"},
         )
         
-        # In-memory caches (Mintlify pattern + content cache)
+        # In-memory caches (Mintlify pattern)
         self._path_set: Set[str] = set()
         self._dir_map: Dict[str, List[str]] = {}
-        self._content_cache: Dict[str, str] = {}  # O(1) content lookup
         self._tree_saved: bool = False
-        
-        # Batch buffer for writes
-        self._write_buffer: List[Dict[str, Any]] = []
-        self._batch_size = 100
         
         # Bootstrap from existing files (don't save empty tree yet)
         self._bootstrap_path_tree()
@@ -107,7 +76,7 @@ class ChromaFs:
             self._path_set = set(tree_data.keys())
             self._tree_saved = True
             
-            # Build directory map and populate content cache
+            # Build directory map
             for path in self._path_set:
                 parts = path.rsplit("/", 1)
                 if len(parts) == 2:
@@ -115,9 +84,6 @@ class ChromaFs:
                     if dir_path not in self._dir_map:
                         self._dir_map[dir_path] = []
                     self._dir_map[dir_path].append(file_name)
-            
-            # Pre-populate content cache (lazy load on first access)
-            # Don't load all at startup - too slow
         else:
             # Scan existing files and build tree
             all_files = self.collection.get(include=["metadatas"])
@@ -157,81 +123,6 @@ class ChromaFs:
             metadatas=[{"path": "__path_tree__"}],
         )
 
-    def _flush_write_buffer(self):
-        """Flush pending writes in batch."""
-        if not self._write_buffer:
-            return
-        
-        # Split into batches
-        for i in range(0, len(self._write_buffer), self._batch_size):
-            batch = self._write_buffer[i:i + self._batch_size]
-            
-            ids = [item["id"] for item in batch]
-            documents = [item["document"] for item in batch]
-            metadatas = [item["metadata"] for item in batch]
-            
-            # Check for updates vs new adds
-            existing_paths = {m["path"] for m in metadatas}
-            existing_in_db = self.collection.get(
-                where={"path": {"$in": list(existing_paths)}},
-                include=["metadatas"],
-            )
-            
-            existing_path_map = {m["path"]: id_ for id_, m in 
-                               zip(existing_in_db["ids"], existing_in_db["metadatas"])}
-            
-            # Separate adds and updates
-            add_ids, add_docs, add_metas = [], [], []
-            update_ids, update_docs = [], []
-            
-            for item in batch:
-                path = item["metadata"]["path"]
-                if path in existing_path_map:
-                    update_ids.append(existing_path_map[path])
-                    update_docs.append(item["document"])
-                else:
-                    add_ids.append(item["id"])
-                    add_docs.append(item["document"])
-                    add_metas.append(item["metadata"])
-            
-            # Batch update
-            if update_ids:
-                self.collection.update(
-                    ids=update_ids,
-                    documents=update_docs,
-                )
-            
-            # Batch add
-            if add_ids:
-                self.collection.add(
-                    ids=add_ids,
-                    documents=add_docs,
-                    metadatas=add_metas,
-                )
-            
-            # Update in-memory cache
-            for item in batch:
-                path = item["metadata"]["path"]
-                self._path_set.add(path)
-                self._content_cache[path] = item["document"]
-                
-                # LRU-style cache eviction
-                if len(self._content_cache) > self.cache_size:
-                    oldest = next(iter(self._content_cache))
-                    del self._content_cache[oldest]
-                
-                parts = path.rsplit("/", 1)
-                if len(parts) == 2:
-                    dir_path, file_name = parts
-                    if dir_path not in self._dir_map:
-                        self._dir_map[dir_path] = []
-                    if file_name not in self._dir_map[dir_path]:
-                        self._dir_map[dir_path].append(file_name)
-            
-            self._tree_saved = False
-        
-        self._write_buffer.clear()
-
     def _parse_command(self, command: str) -> Tuple[str, str]:
         """Parse UNIX-like command into (cmd, arg).
         
@@ -254,8 +145,10 @@ class ChromaFs:
         
         Uses in-memory cache for O(1) lookup.
         """
-        # Flush any pending writes
-        self._flush_write_buffer()
+        # Save tree if dirty (lazy save)
+        if not self._tree_saved:
+            self._save_path_tree()
+            self._tree_saved = True
         
         if not path:
             path = "."
@@ -290,7 +183,7 @@ class ChromaFs:
         return path
 
     def cat(self, path: str) -> str:
-        """Read file contents (O(1) from cache if available).
+        """Read file contents.
         
         Args:
             path: File path to read
@@ -303,17 +196,10 @@ class ChromaFs:
         """
         path = path.strip()
         
-        # Flush writes first
-        self._flush_write_buffer()
-        
         if path not in self._path_set:
             raise FileNotFoundError(f"cat: {path}: No such file or directory")
         
-        # Check cache first (O(1))
-        if path in self._content_cache:
-            return self._content_cache[path]
-        
-        # Lazy load from DB
+        # Get file content from ChromaDB
         results = self.collection.get(
             where={"path": path},
             include=["documents"],
@@ -322,17 +208,7 @@ class ChromaFs:
         if not results["ids"]:
             raise FileNotFoundError(f"cat: {path}: File not found in database")
         
-        content = results["documents"][0]
-        
-        # Add to cache
-        self._content_cache[path] = content
-        
-        # LRU eviction
-        if len(self._content_cache) > self.cache_size:
-            oldest = next(iter(self._content_cache))
-            del self._content_cache[oldest]
-        
-        return content
+        return results["documents"][0]
 
     def grep(self, pattern: str) -> str:
         """Search for pattern in all files.
@@ -343,28 +219,23 @@ class ChromaFs:
         Returns:
             Matching lines with file paths
         """
-        # Flush writes first
-        self._flush_write_buffer()
-        
         pattern = pattern.strip()
         if not pattern:
             return "grep: No pattern specified"
         
-        # Get all files (optimized: use get instead of query)
+        # Get all files
         all_files = self.collection.get(include=["documents", "metadatas"])
         
         matches = []
-        try:
-            regex = re.compile(pattern)
-            for doc, meta in zip(all_files["documents"], all_files["metadatas"]):
-                path = meta.get("path", "unknown")
+        for doc, meta in zip(all_files["documents"], all_files["metadatas"]):
+            path = meta.get("path", "unknown")
+            try:
+                regex = re.compile(pattern)
                 for i, line in enumerate(doc.split("\n"), 1):
                     if regex.search(line):
                         matches.append(f"{path}:{i}:{line}")
-        except re.error:
-            # Fallback to simple substring search
-            for doc, meta in zip(all_files["documents"], all_files["metadatas"]):
-                path = meta.get("path", "unknown")
+            except re.error:
+                # Fallback to simple substring search
                 for i, line in enumerate(doc.split("\n"), 1):
                     if pattern in line:
                         matches.append(f"{path}:{i}:{line}")
@@ -380,8 +251,10 @@ class ChromaFs:
         Returns:
             List of matching file paths
         """
-        # Flush writes first
-        self._flush_write_buffer()
+        # Save tree if dirty (lazy save)
+        if not self._tree_saved:
+            self._save_path_tree()
+            self._tree_saved = True
         
         pattern = pattern.strip()
         
@@ -395,12 +268,11 @@ class ChromaFs:
         matches = [path for path in self._path_set if regex.search(path)]
         return "\n".join(sorted(matches)) if matches else f"No files matching '{pattern}'"
 
-    def write(self, command: str, flush: bool = False) -> str:
-        """Write a file (buffered for batching).
+    def write(self, command: str) -> str:
+        """Write a file.
         
         Args:
             command: Write command in format "path=content"
-            flush: If True, flush buffer immediately
             
         Returns:
             Confirmation message
@@ -415,31 +287,38 @@ class ChromaFs:
         # Generate unique ID
         doc_id = uuid.uuid4().hex
         
-        # Add to buffer
-        self._write_buffer.append({
-            "id": doc_id,
-            "document": content,
-            "metadata": {"path": path},
-        })
+        # Check if file exists and get old ID
+        existing = self.collection.get(
+            where={"path": path},
+        )
         
-        # Update in-memory structures immediately for consistency
-        self._path_set.add(path)
-        self._content_cache[path] = content
-        self._tree_saved = False
-        
-        parts = path.rsplit("/", 1)
-        if len(parts) == 2:
-            dir_path, file_name = parts
-            if dir_path not in self._dir_map:
-                self._dir_map[dir_path] = []
-            if file_name not in self._dir_map[dir_path]:
+        if existing["ids"]:
+            # Update existing file
+            self.collection.update(
+                ids=existing["ids"],
+                documents=[content],
+                metadatas=[{"path": path}],
+            )
+        else:
+            # Add new file
+            self.collection.add(
+                ids=[doc_id],
+                documents=[content],
+                metadatas=[{"path": path}],
+            )
+            # Update in-memory cache
+            self._path_set.add(path)
+            parts = path.rsplit("/", 1)
+            if len(parts) == 2:
+                dir_path, file_name = parts
+                if dir_path not in self._dir_map:
+                    self._dir_map[dir_path] = []
                 self._dir_map[dir_path].append(file_name)
+            
+            # Mark tree as dirty (save on next ls/find, not on every write)
+            self._tree_saved = False
         
-        # Flush if buffer is full or explicit flush requested
-        if flush or len(self._write_buffer) >= self._batch_size:
-            self._flush_write_buffer()
-        
-        return f"Written {path} (buffered)"
+        return f"Written {path}"
 
     def read(self, path: str) -> str:
         """Read file (alias for cat).
@@ -464,9 +343,6 @@ class ChromaFs:
         Raises:
             FileNotFoundError: If file doesn't exist
         """
-        # Flush writes first
-        self._flush_write_buffer()
-        
         path = path.strip()
         
         if path not in self._path_set:
@@ -482,8 +358,6 @@ class ChromaFs:
         
         # Update in-memory cache
         self._path_set.discard(path)
-        self._content_cache.pop(path, None)
-        
         parts = path.rsplit("/", 1)
         if len(parts) == 2:
             dir_path, file_name = parts
@@ -497,9 +371,6 @@ class ChromaFs:
 
     def clear(self):
         """Clear all files from the VFS."""
-        # Flush writes first
-        self._flush_write_buffer()
-        
         # Delete all except __path_tree__
         all_files = self.collection.get(include=["metadatas"])
         ids_to_delete = [
@@ -513,8 +384,6 @@ class ChromaFs:
         # Clear in-memory cache
         self._path_set.clear()
         self._dir_map.clear()
-        self._content_cache.clear()
-        self._write_buffer.clear()
 
     def list_all(self) -> List[str]:
         """List all file paths.
@@ -522,9 +391,6 @@ class ChromaFs:
         Returns:
             List of all file paths
         """
-        # Flush writes first
-        self._flush_write_buffer()
-        
         return sorted(self._path_set)
 
     def stats(self) -> Dict[str, Any]:
@@ -533,9 +399,6 @@ class ChromaFs:
         Returns:
             Dictionary with file count, total size, etc.
         """
-        # Flush writes first
-        self._flush_write_buffer()
-        
         all_files = self.collection.get(include=["documents", "metadatas"])
         total_size = sum(len(doc) for doc in all_files["documents"])
         
@@ -543,11 +406,5 @@ class ChromaFs:
             "total_files": len(self._path_set),
             "total_size": total_size,
             "directories": len(self._dir_map),
-            "cache_size": len(self._content_cache),
-            "cache_hit_rate": "N/A (no metrics)",
             "db_path": self.db_path,
         }
-
-    def flush(self):
-        """Explicitly flush all pending writes."""
-        self._flush_write_buffer()
