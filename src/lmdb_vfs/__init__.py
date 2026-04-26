@@ -29,8 +29,13 @@ from .errors import VFSError, FileNotFound, PathError
 try:
     from .enhanced import EnhancedVFS, TieredContent, FileVersion
     from .shell import VFSShell
-    __all__ = ["VFS", "EnhancedVFS", "VFSShell", "VFSError", "FileNotFound", "PathError"]
+    from .mcp import MCPVFS, AsyncMCPVFS, create_mcp_server
+    from .dedup import DeduplicatedVFS, write_by_hash, get_content_hash
+    __all__ = [
+        "VFS", "EnhancedVFS", "VFSShell", "MCPVFS", "AsyncMCPVFS", 
+        "DeduplicatedVFS", "VFSError", "FileNotFound", "PathError"
+    ]
 except ImportError:
     __all__ = ["VFS", "VFSError", "FileNotFound", "PathError"]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
