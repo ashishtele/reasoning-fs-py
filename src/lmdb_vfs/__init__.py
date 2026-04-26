@@ -28,8 +28,8 @@ from .errors import VFSError, FileNotFound, PathError
 # Optional enhanced features
 try:
     from .enhanced import EnhancedVFS, TieredContent, FileVersion
-    __all__ = ["VFS", "EnhancedVFS", "TieredContent", "FileVersion", 
-               "VFSError", "FileNotFound", "PathError"]
+    from .shell import VFSShell
+    __all__ = ["VFS", "EnhancedVFS", "VFSShell", "VFSError", "FileNotFound", "PathError"]
 except ImportError:
     __all__ = ["VFS", "VFSError", "FileNotFound", "PathError"]
 
