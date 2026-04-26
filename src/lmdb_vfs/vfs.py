@@ -382,7 +382,7 @@ class VFS:
                 parts = relative.split("/")
 
                 if len(parts) == 1:
-                    files.append(key_str)
+                    files.append(relative)
                 else:
                     dirs.add(parts[0])
 
